@@ -1,15 +1,18 @@
 # How2UseX410
 
 Notes for setting up and using the **USRP X410** from the host laptop, in a
-receive-only configuration (4 RX channels).
+receive-only configuration (4 RX channels), plus the **PlutoSDR+** used as the
+transmit side.
 
-Follow the steps in order — each one assumes the previous one succeeded.
+Steps 1–3 cover the X410 and run in order — each assumes the previous one
+succeeded. The Pluto+ section is independent of them.
 
 | File | What it is |
 | --- | --- |
 | `set_ip.sh` | Configures the host network interface that talks to the X410 |
 | `x410_4rx.grc` | GNU Radio Companion flowgraph: 4-channel receive |
 | `x410_4rx.py` | Python generated from that flowgraph (run directly) |
+| `pluto+_Tx.py` | PlutoSDR+ transmitter: continuous tone on both TX channels |
 
 ---
 
@@ -275,6 +278,221 @@ over-the-wire format is `sc16`, 4 bytes per sample) — comfortable for the link
 but only with the MTU 9000 and socket buffer settings that `set_ip.sh` applies.
 If you see `O` (overflow) printed in the terminal, the host is not keeping up:
 lower the sample rate, close the GUI sinks, or check that Step 1 actually ran.
+
+---
+
+## PlutoSDR+ — the transmit side
+
+The **Pluto+** is a clone of the ADALM-PLUTO with two TX and two RX SMA
+connectors and an RJ45 port. `pluto+_Tx.py` uses it as a signal generator:
+a continuous tone out of both transmitters, to feed the X410's receivers.
+
+It runs stock PlutoSDR firmware, so it identifies itself as an ordinary
+ADALM-PLUTO. Don't use the model string to tell them apart — check
+`hw_model_variant` instead (see "Confirming it is 2T2R" below).
+
+### Installing the host software
+
+The Pluto is driven through **libiio** (the C library that talks to the
+hardware) and **pyadi-iio** (`import adi`, the Python layer on top of it).
+
+#### Linux / Ubuntu
+
+```bash
+sudo apt install libiio-utils libiio-dev python3-libiio
+pip3 install pyadi-iio
+```
+
+#### macOS
+
+There is no Homebrew formula for libiio, so it has to be built from source.
+Build dependencies first:
+
+```bash
+brew install cmake pkg-config libusb
+```
+
+Then build libiio. Use the tag that matches the `pylibiio` version pip will
+install (v0.25 below), or the Python bindings and the library disagree:
+
+```bash
+git clone --depth 1 --branch v0.25 https://github.com/analogdevicesinc/libiio.git
+cd libiio && mkdir build && cd build
+cmake .. \
+  -DCMAKE_INSTALL_PREFIX=/usr/local \
+  -DOSX_FRAMEWORK=OFF \
+  -DWITH_TESTS=ON -DWITH_DOC=OFF \
+  -DWITH_USB_BACKEND=ON -DWITH_NETWORK_BACKEND=ON \
+  -DWITH_SERIAL_BACKEND=OFF -DENABLE_PACKAGING=OFF
+make -j$(sysctl -n hw.ncpu)
+make install
+```
+
+`OSX_FRAMEWORK=OFF` matters: the default builds a `.framework` bundle, and the
+Python bindings look for a plain `libiio.dylib`. No `sudo` is needed if
+Homebrew already owns `/usr/local`.
+
+The installed command-line tools have a broken rpath and won't find the library
+they just linked against. Patch them once:
+
+```bash
+for b in /usr/local/bin/iio_*; do install_name_tool -add_rpath /usr/local/lib "$b"; done
+```
+
+Finally the Python side, in its own virtualenv:
+
+```bash
+python3 -m venv ~/.venvs/pluto
+~/.venvs/pluto/bin/pip install numpy pyadi-iio
+```
+
+### Confirming it is connected
+
+```bash
+iio_info -S
+```
+
+Expected — the trailing `[usb:20.1.5]` is the URI the script needs:
+
+```
+Available contexts:
+	0: 0456:b673 (Analog Devices Inc. PlutoSDR (ADALM-PLUTO)), serial=1040...23 [usb:20.1.5]
+```
+
+Nothing listed means the board is not enumerating: check the USB cable, or on
+Ethernet check that the host can reach the Pluto's IP.
+
+### Confirming it is 2T2R
+
+A stock ADALM-PLUTO has one TX; the Pluto+ has two. The device itself will tell
+you which you have:
+
+```bash
+iio_attr -u usb:20.1.5 -C hw_model_variant
+```
+
+`1` means the AD9363 is unlocked to AD9361 2T2R and TX2 exists. `0` means a
+single-channel radio, and the two-channel script below cannot work on it.
+
+Pass the URI explicitly. Without `-u`, these tools default to the *local*
+backend, which does not exist on macOS — you get
+`Unable to create Local IIO context : Function not implemented (78)`, which
+looks like a device failure but is only a missing argument.
+
+To see the channels directly, `iio_info -u usb:20.1.5` should list four TX scan
+channels (`voltage0`–`voltage3`, i.e. two I/Q pairs) under
+`cf-ad9361-dds-core-lpc`.
+
+### Running the transmitter
+
+```bash
+~/.venvs/pluto/bin/python pluto+_Tx.py
+```
+
+It prints its configuration, starts transmitting, and keeps going until you
+press **Ctrl-C**, which destroys the TX buffer and stops the carrier:
+
+```
+Connecting to    : usb:20.1.5
+TX LO          : 2482.000 MHz  (shared by TX1 and TX2)
+Sample rate    : 1.000 Msps
+Buffer         : 16384 samples (16.384 ms), bin spacing 61.04 Hz
+Tone type      : complex exponential
+  TX1: attenuation -10 dB
+        offset +100,000 Hz -> +99,975.59 Hz  (RF 2482.099976 MHz)
+  TX2: attenuation -10 dB
+        offset +100,000 Hz -> +99,975.59 Hz  (RF 2482.099976 MHz)
+
+Transmitting on TX1 and TX2. Ctrl-C to stop.
+```
+
+### What `pluto+_Tx.py` does
+
+Every knob is a variable at the top of the file:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `pluto_uri` | `""` | `""` auto-detects over USB. Set `"ip:172.19.222.191"` for Ethernet. |
+| `center_freq` | `2482e6` | TX LO. **Shared by both channels** — see below. |
+| `sample_rate` | `1e6` | 1 Msps. Also sets the tone's usable range, ±500 kHz. |
+| `buffer_size` | `2**14` | Length of the repeating buffer; sets frequency resolution. |
+| `real_tone` | `False` | `False` = complex exponential, one line at LO+offset. `True` = real cosine, lines at LO±offset. |
+| `tone_offsets_ch0/1` | `[100_000]` | Baseband offsets per channel. Identical lists = same sine out of both. Add entries for multi-tone. |
+| `tx_gain_ch0/1` | `-10` | **Attenuation** in dB, not gain. |
+
+**One radio object, two channels.** `adi.ad9361` is the 2×2 class;
+`adi.Pluto` is single-channel and cannot reach TX2. Enabling both is
+`tx_enabled_channels = [0, 1]`, and the transmit call takes a *list* — one
+array per channel, both the same length:
+
+```python
+sdr.tx([signal_ch0, signal_ch1])
+```
+
+**Both channels share one LO.** The AD9361 has a single TX synthesizer, so
+TX1 and TX2 are always at the same center frequency. `center_freq` moves both
+together and there is no per-channel equivalent. To separate the two outputs in
+frequency, give them different baseband offsets — e.g. `[100_000]` and
+`[250_000]` puts them 150 kHz apart around the same carrier.
+
+**The buffer is cyclic.** `tx_cyclic_buffer = True` means `sdr.tx()` is called
+**once** and the hardware repeats that buffer forever, giving gap-free CW. (The
+alternative, re-sending in a Python loop, leaves a gap between every burst.)
+
+**Tones are snapped to the buffer's FFT bins.** This is the non-obvious part. A
+cyclic buffer must hold a whole number of cycles, or every wrap is a phase
+discontinuity that smears the tone across the spectrum:
+
+| | peak-to-leakage ratio |
+| --- | --- |
+| snapped to a bin (integer cycles) | 5.8 × 10⁸ |
+| raw 100 kHz (1638.4 cycles) | 1.5 |
+
+The cost is that you get the *nearest* achievable frequency — 99,975.59 Hz
+instead of 100,000 Hz, with 16384 samples at 1 Msps. The script prints the
+actual value. For exact round numbers, pick a buffer size that divides evenly:
+`buffer_size = 10_000` makes 100 kHz exactly 1000 cycles.
+
+**Amplitude.** Waveforms are normalized to their peak and scaled by
+`2**14 * 0.9`, the range pyadi-iio expects before packing into the int16 TX
+buffer. The normalize step is what keeps multi-tone sums from clipping.
+
+### Verifying the tone without a spectrum analyzer
+
+The AD9361 can loop its transmitter back into its receiver digitally, which
+proves the waveform reaches the DAC path:
+
+```python
+sdr.loopback = 1        # 1 = digital TX->RX, 0 = off
+```
+
+Transmit different offsets per channel, receive, and FFT. Measured on this
+setup, with TX1 at 100 kHz and TX2 at 250 kHz:
+
+| | expected | measured | error |
+| --- | --- | --- | --- |
+| TX1 → RX1 | +99,975.59 Hz | +99,975.6 Hz | 0.0 Hz |
+| TX2 → RX2 | +250,000.00 Hz | +250,000.0 Hz | 0.0 Hz |
+
+Set `sdr.loopback = 0` afterwards. Note the limit: this exercises the digital
+path, **not** the RF output at the SMA connectors. For that you need a cable
+into an RX port or a spectrum analyzer.
+
+### Gotchas
+
+- **TX "gain" is attenuation.** `tx_hardwaregain_chanN` runs from `0` (full
+  power) down to `-89.75`. Setting it to 0 is the loudest the radio goes, not
+  the quietest.
+- **Don't put a tone at 0 Hz offset.** LO leakage sits exactly at the carrier
+  and will swamp it. Offset by a few tens of kHz at least.
+- **The two outputs are frequency-coherent but not phase-calibrated.** They
+  share an LO and sample clock so they won't drift apart, but the fixed phase
+  and amplitude mismatch between the analog paths is not zero and can change
+  across retunes. Measure it with a cabled loopback before relying on it.
+- **`|offset| < sample_rate/2`.** The script raises `ValueError` rather than
+  aliasing silently.
+- **2482 MHz is in the 2.4 GHz ISM band**, so ambient WiFi and Bluetooth land
+  in the same recordings.
 
 ---
 
