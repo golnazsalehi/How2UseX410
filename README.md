@@ -103,6 +103,52 @@ panel gives four receive ports:
 
 Connect an antenna (or cable) to each **TX/RX** port you intend to use.
 
+### What the blocks do
+
+A GNU Radio flowgraph is a set of **blocks** joined by arrows. Samples flow
+along the arrows, left to right, continuously while the flowgraph runs. A block
+with no input is a **source** (it produces samples); a block with no output is a
+**sink** (it consumes them). Everything in between transforms or passes them
+along.
+
+This flowgraph uses four block types:
+
+**UHD: USRP Source** — the source. It talks to the radio over the network link
+from Step 1 and pushes the received samples into the flowgraph. All the RF
+settings (frequency, gain, sample rate, antenna) live here, because this is the
+only block that knows about hardware. With `Num Channels = 4` it has four
+output ports, one per RF port, each carrying its own independent stream.
+
+**QT GUI Sink** — a display. It takes a stream of samples and draws it in a Qt
+window: time domain, frequency spectrum, waterfall, and constellation, all in
+one widget. It is *only* for looking at the signal — samples that go into it are
+plotted and thrown away. Nothing is saved. There are four of them here, one per
+channel, which is why you get four sets of plots.
+
+**Head** — a passthrough with a counter. It copies the first `num_items`
+samples straight through, then stops producing anything. It changes nothing
+about the data; its job is to *end* the capture. When every Head in the
+flowgraph has hit its limit, the flowgraph shuts down on its own. Without a
+Head, a recording runs until you press Ctrl-C and the output file grows until
+the disk fills.
+
+**File Sink** — writes whatever reaches it straight to a file on disk, raw, with
+no header and no metadata. What it writes is exactly the sample format of the
+stream (here `complex64`), which is why you have to know the format yourself
+when reading the file back.
+
+**How they connect.** A single output port can feed several blocks at once —
+GNU Radio duplicates the stream. Each channel here fans out two ways:
+
+```
+                        ┌─► QT GUI Sink          (watch it live)
+USRP Source ch N ───────┤
+                        └─► Head ─► File Sink    (record N samples to disk)
+```
+
+So the plots and the recording see the identical samples; watching costs you
+nothing in the recorded data.
+
 ### Running it
 
 Either run the generated Python directly:
