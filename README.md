@@ -12,7 +12,7 @@ succeeded. The Pluto+ section is independent of them.
 | `set_ip.sh` | Configures the host network interface that talks to the X410 |
 | `x410_4rx.grc` | GNU Radio Companion flowgraph: 4-channel receive |
 | `x410_4rx.py` | Python generated from that flowgraph (run directly) |
-| `pluto+_Tx.py` | PlutoSDR+ transmitter: continuous tone on both TX channels |
+| `pluto+_Tx.py` | PlutoSDR transmitter: continuous tone from one TX port, on either board |
 
 ---
 
@@ -338,6 +338,19 @@ side of the link — no host, no carrier. For a standalone transmitter that
 survives losing the host you need the AD9361's internal DDS instead, which is a
 different mechanism entirely.
 
+### Getting the code
+
+```bash
+git clone git@github.com:golnazsalehi/How2UseX410.git
+cd How2UseX410
+```
+
+**Every command in this section is run from the repository root**, and uses
+`python3` to mean *whichever interpreter has pyadi-iio installed*. On macOS
+following the virtualenv instructions below, that is
+`~/.venvs/pluto/bin/python` — substitute it, or activate the venv first with
+`source ~/.venvs/pluto/bin/activate` and keep using `python3`.
+
 ### Installing the host software
 
 The Pluto is driven through **libiio** (the C library that talks to the
@@ -349,6 +362,19 @@ hardware) and **pyadi-iio** (`import adi`, the Python layer on top of it).
 sudo apt install libiio-utils libiio-dev python3-libiio
 pip3 install pyadi-iio
 ```
+
+Linux also needs a **udev rule**, or the Pluto is invisible to a non-root user
+and `iio_info -S` comes back empty with the board plugged in:
+
+```bash
+sudo wget -O /etc/udev/rules.d/53-adi-plutosdr-usb.rules https://raw.githubusercontent.com/analogdevicesinc/plutosdr-fw/master/scripts/53-adi-plutosdr-usb.rules
+```
+
+```bash
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Replug the board afterwards.
 
 #### macOS
 
@@ -393,6 +419,25 @@ python3 -m venv ~/.venvs/pluto
 ~/.venvs/pluto/bin/pip install numpy pyadi-iio
 ```
 
+#### Checking the install
+
+Whatever the platform, this is the test that matters:
+
+```bash
+python3 -c "import adi, iio; print('ok')"
+```
+
+If it prints `ok`, that interpreter can drive the radio and every command below
+will work as written. Two ways it goes wrong:
+
+- **`ModuleNotFoundError` inside conda.** `apt install python3-libiio` puts the
+  bindings in *system* python, which a conda environment does not see. Either
+  run the scripts with `/usr/bin/python3` explicitly, or build the virtualenv
+  as shown above — `pip install pyadi-iio` pulls `pylibiio` in with it.
+- **A stray `PYTHONPATH`.** It survives into virtualenvs and shadows packages,
+  producing import errors that look like a broken install. Check with
+  `echo $PYTHONPATH` and `unset PYTHONPATH` if it is not empty.
+
 ### Confirming it is connected
 
 ```bash
@@ -427,7 +472,7 @@ transmitters.
 This lists every attached radio with its transmitter count and serial:
 
 ```bash
-~/.venvs/pluto/bin/python -c "
+python3 -c "
 import iio
 for u, d in sorted(iio.scan_contexts().items()):
     c = iio.Context(u); dds = c.find_device('cf-ad9361-dds-core-lpc')
@@ -497,7 +542,7 @@ rather than guessing.
 Confirm both are visible before you start:
 
 ```bash
-cd ~/Desktop/How2UseX410 && ~/.venvs/pluto/bin/python pluto+_Tx.py --list
+python3 pluto+_Tx.py --list
 ```
 
 ```
@@ -515,13 +560,13 @@ would never have both transmitting.
 **Terminal 1 — the stock Pluto** (1 TX, SparSDR board):
 
 ```bash
-cd ~/Desktop/How2UseX410 && ~/.venvs/pluto/bin/python pluto+_Tx.py -s pluto --tx 1
+python3 pluto+_Tx.py -s pluto --tx 1
 ```
 
 **Terminal 2 — the Pluto+** (2 TX, uses TX1 only and mutes TX2):
 
 ```bash
-cd ~/Desktop/How2UseX410 && ~/.venvs/pluto/bin/python pluto+_Tx.py -s pluto+ --tx 1
+python3 pluto+_Tx.py -s pluto+ --tx 1
 ```
 
 Each prints its configuration and then transmits until **Ctrl-C**, which
@@ -544,10 +589,18 @@ Transmitting on TX1 only. Ctrl-C to stop.
 Asking for `--tx 2` on the stock Pluto raises a clear error rather than a
 confusing channel fault — the AD9364 is 1T1R silicon and has no TX2.
 
-For a long unattended run, stop the laptop sleeping — sleep kills the carrier:
+For a long unattended run, stop the machine sleeping — sleep kills the carrier.
+
+macOS:
 
 ```bash
-caffeinate -i ~/.venvs/pluto/bin/python pluto+_Tx.py -s pluto+ --tx 1
+caffeinate -i python3 pluto+_Tx.py -s pluto+ --tx 1
+```
+
+Linux:
+
+```bash
+systemd-inhibit --what=idle:sleep python3 pluto+_Tx.py -s pluto+ --tx 1
 ```
 
 If the second process throws `PermissionError: Unable to claim interface`, that
@@ -689,8 +742,8 @@ into an RX port or a spectrum analyzer.
 - **`|offset| < sample_rate/2`.** The script raises `ValueError` rather than
   aliasing silently.
 - **The carrier dies with the process.** Ctrl-C, closing the terminal,
-  unplugging USB, or the laptop sleeping all stop it. Use `caffeinate -i` for
-  long runs.
+  unplugging USB, or the machine sleeping all stop it. Use `caffeinate -i`
+  (macOS) or `systemd-inhibit` (Linux) for long runs.
 - **2.45 GHz is in the 2.4 GHz ISM band**, so ambient WiFi and Bluetooth land
   in the same recordings — and a CW carrier there will disrupt nearby WiFi and
   BLE. Keep it cabled and attenuated unless you are in a chamber.
