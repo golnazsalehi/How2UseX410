@@ -59,9 +59,12 @@ MUTE_DB = -89.75                # the most attenuation the AD9361 accepts
 #   python3 pluto+_Tx.py -s pluto+ --tx 1
 #   python3 pluto+_Tx.py -s pluto  --tx 1 -t 2e6
 
+# Aliases for the boards in this lab. Any serial also works verbatim, which is
+# what to use for a board that is not listed here -- run --list to get it.
 KNOWN = {
-    "pluto+": "1040004a9e95000ceaff17006e36049ff3",   # Rev.C AD9363A, 2 TX
-    "pluto":  "1044730a1997000220002200b12f7b229e",   # Rev.B AD9364,  1 TX
+    "pluto+":  "1040004a9e95000ceaff17006e36049ff3",  # Rev.C AD9363A, 2 TX
+    "pluto+2": "104473b80a16000910001d00d8febe15e0",  # Rev.C AD9363A, 2 TX
+    "pluto":   "1044730a1997000220002200b12f7b229e",  # Rev.B AD9364,  1 TX, SparSDR
 }
 
 
